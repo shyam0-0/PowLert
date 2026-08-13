@@ -1,0 +1,74 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- Runtime-requested on Android 13+. Alert must still work via sound/vibration if denied. -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+    <!-- Normal permission, no runtime prompt. -->
+    <uses-permission android:name="android.permission.VIBRATE" />
+
+    <!-- Required to run BatteryMonitoringService in the foreground. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+
+    <!-- specialUse is the correct type: charging/battery monitoring doesn't fit any of the
+         predefined foreground service types (camera, location, mediaPlayback, dataSync, etc).
+         See PROPERTY_SPECIAL_USE_FGS_SUBTYPE below for the declared use case. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+
+    <!-- Lets the service restart itself after reboot if the alert was already enabled.
+         RECEIVE_BOOT_COMPLETED has no runtime prompt. -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+
+    <application
+        android:name=".ChargeAlertApplication"
+        android:allowBackup="true"
+        android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:label="@string/app_name"
+        android:theme="@style/Theme.ChargeAlert"
+        android:supportsRtl="true">
+
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:theme="@style/Theme.ChargeAlert">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!--
+          Started only via an exempted trigger:
+            - user toggling the alert ON in MainActivity (UI-interaction exemption), or
+            - BootReceiver below, after ACTION_BOOT_COMPLETED, if the alert was already enabled.
+          See plan.md section 15.2 for why the old "manifest receiver on
+          ACTION_POWER_CONNECTED starts/stops the service" design does not work on
+          modern Android and was replaced with this always-on-while-enabled model.
+        -->
+        <service
+            android:name=".service.BatteryMonitoringService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Monitors device charging/battery state to provide a user-configured battery charging alert." />
+        </service>
+
+        <!--
+          ACTION_BOOT_COMPLETED is exempt from both the implicit-broadcast manifest
+          restrictions and the foreground-service background-start restrictions, so this
+          is a safe way to resume monitoring after a reboot without ever having opened
+          the app. It only restarts the service if the user had already enabled the alert.
+        -->
+        <receiver
+            android:name=".receiver.BootReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+            </intent-filter>
+        </receiver>
+
+    </application>
+
+</manifest>

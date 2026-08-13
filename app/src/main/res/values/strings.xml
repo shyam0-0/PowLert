@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">ChargeAlert</string>
+
+    <string name="monitoring_channel_name">Monitoring Status</string>
+    <string name="monitoring_channel_description">Silent, ongoing charging status while monitoring is active</string>
+    <string name="notification_idle_title">ChargeAlert monitoring</string>
+    <string name="notification_idle_text">Waiting for charger to be connected</string>
+    <string name="notification_charging_title">Charging</string>
+
+    <string name="alert_channel_name">Battery Alerts</string>
+    <string name="alert_channel_description">Alerts when your battery reaches the configured threshold</string>
+    <string name="alert_notification_title">🔋 Battery Alert</string>
+    <string name="alert_notification_text">Battery reached %1$d%%.</string>
+</resources>
