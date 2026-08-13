@@ -1,6 +1,7 @@
 package com.chargealert.app
 
 import android.Manifest
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
@@ -22,7 +23,7 @@ import com.chargealert.app.ui.theme.ChargeAlertTheme
 /**
  * Hosts the dashboard. All state/business logic lives in HomeViewModel; this
  * activity only wires Android-specific plumbing (permission requests,
- * lifecycle-driven permission re-checks) into it.
+ * the system file picker, lifecycle-driven permission re-checks) into it.
  */
 class MainActivity : ComponentActivity() {
 
@@ -31,6 +32,17 @@ class MainActivity : ComponentActivity() {
     private val notificationPermissionLauncher =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
             viewModel.onNotificationPermissionStateChanged(granted)
+        }
+
+    private val customSoundLauncher =
+        registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+            if (uri != null) {
+                // Persist read access across reboots/process death -- we only
+                // store the URI string, not a copy of the file (plan.md Phase 4
+                // section 8).
+                contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                viewModel.onCustomSoundPicked(uri)
+            }
         }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -66,7 +78,14 @@ class MainActivity : ComponentActivity() {
                     onSoundEnabledChange = viewModel::onSoundEnabledChange,
                     onVibrationEnabledChange = viewModel::onVibrationEnabledChange,
                     onSelectedSoundChange = viewModel::onSelectedSoundChange,
+                    onAddCustomSound = { customSoundLauncher.launch(arrayOf("audio/*")) },
+                    onRepeatEnabledChange = viewModel::onRepeatEnabledChange,
+                    onRepeatIntervalChange = viewModel::onRepeatIntervalChange,
+                    onMaxRepeatsChange = viewModel::onMaxRepeatsChange,
+                    onSnoozeChange = viewModel::onSnoozeChange,
                     onTestAlert = viewModel::onTestAlert,
+                    onStopAlert = viewModel::onStopAlert,
+                    onSnoozeAlert = viewModel::onSnoozeAlert,
                     onRequestNotificationPermission = { requestNotificationPermissionIfNeeded(force = true) },
                     onDismissWarning = viewModel::dismissWarning
                 )

@@ -5,11 +5,28 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import com.chargealert.app.data.BatteryRepository
 import com.chargealert.app.data.UserPreferencesRepository
+import com.chargealert.app.domain.ChargingSessionState
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 
 class ChargeAlertApplication : Application() {
 
     val preferencesRepository by lazy { UserPreferencesRepository(this) }
     val batteryRepository by lazy { BatteryRepository(this) }
+
+    /**
+     * Lets the UI show an in-app Stop/Snooze fallback when notification
+     * actions aren't available (permission denied) -- see plan.md Phase 4
+     * section 18. The service is the sole writer; the ViewModel only reads.
+     * Not persisted: this mirrors runtime-only session state by design.
+     */
+    private val _sessionState = MutableStateFlow<ChargingSessionState>(ChargingSessionState.NotCharging)
+    val sessionState: StateFlow<ChargingSessionState> = _sessionState.asStateFlow()
+
+    fun updateSessionState(state: ChargingSessionState) {
+        _sessionState.value = state
+    }
 
     override fun onCreate() {
         super.onCreate()
@@ -48,6 +65,12 @@ class ChargeAlertApplication : Application() {
 
     companion object {
         const val MONITORING_CHANNEL_ID = "battery_monitoring"
-        const val ALERT_CHANNEL_ID = "battery_alerts"
+
+        // Deliberately not "battery_alerts" -- that ID was used for the
+        // original single low-importance channel back in Phase 0/1, and
+        // Android makes channel importance immutable after creation. Reusing
+        // that ID here would silently stay stuck at LOW importance on any
+        // device that had the earlier app version installed.
+        const val ALERT_CHANNEL_ID = "battery_full_alerts"
     }
 }

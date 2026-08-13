@@ -1,12 +1,14 @@
 package com.chargealert.app.ui
 
 import android.media.RingtoneManager
+import android.net.Uri
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
@@ -20,14 +22,18 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import com.chargealert.app.domain.AlertSettings
-import com.chargealert.app.ui.components.AlertMethodsCard
-import com.chargealert.app.ui.components.BatteryHeroCard
-import com.chargealert.app.ui.components.MonitoringCard
+import com.chargealert.app.ui.components.AlertActiveBanner
+import com.chargealert.app.ui.components.AlertBehaviorSection
+import com.chargealert.app.ui.components.AlertMethodsSection
+import com.chargealert.app.ui.components.BatteryHero
 import com.chargealert.app.ui.components.SoundPickerDialog
 import com.chargealert.app.ui.components.SoundSelectionRow
-import com.chargealert.app.ui.components.TestAlertCard
-import com.chargealert.app.ui.components.ThresholdCard
+import com.chargealert.app.ui.components.TestAlertSection
+import com.chargealert.app.ui.components.ThresholdSection
 import com.chargealert.app.ui.components.WarningBanner
+import com.chargealert.app.ui.components.MonitoringRow
+import com.chargealert.app.ui.theme.SectionLabelStyle
+import com.chargealert.app.ui.theme.Spacing
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
@@ -40,7 +46,14 @@ fun HomeScreen(
     onSoundEnabledChange: (Boolean) -> Unit,
     onVibrationEnabledChange: (Boolean) -> Unit,
     onSelectedSoundChange: (String) -> Unit,
+    onAddCustomSound: () -> Unit,
+    onRepeatEnabledChange: (Boolean) -> Unit,
+    onRepeatIntervalChange: (Int) -> Unit,
+    onMaxRepeatsChange: (Int) -> Unit,
+    onSnoozeChange: (Int) -> Unit,
     onTestAlert: () -> Unit,
+    onStopAlert: () -> Unit,
+    onSnoozeAlert: () -> Unit,
     onRequestNotificationPermission: () -> Unit,
     onDismissWarning: () -> Unit
 ) {
@@ -50,7 +63,11 @@ fun HomeScreen(
         SoundPickerDialog(
             currentSelection = uiState.alertSettings.selectedSound,
             onDismiss = { showSoundPicker = false },
-            onSoundSelected = onSelectedSoundChange
+            onSoundSelected = onSelectedSoundChange,
+            onAddCustomSound = {
+                showSoundPicker = false
+                onAddCustomSound()
+            }
         )
     }
 
@@ -60,10 +77,13 @@ fun HomeScreen(
                 .fillMaxSize()
                 .padding(padding)
                 .verticalScroll(rememberScrollState())
-                .padding(horizontal = 20.dp, vertical = 20.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp)
+                .padding(
+                    horizontal = Spacing.screenHorizontal,
+                    vertical = Spacing.screenTop
+                ),
+            verticalArrangement = Arrangement.spacedBy(Spacing.sectionGap)
         ) {
-            Text(text = "ChargeAlert", style = MaterialTheme.typography.headlineMedium)
+            Text(text = "ChargeAlert", style = MaterialTheme.typography.titleLarge)
 
             if (uiState.alertSettings.notificationEnabled && !uiState.notificationPermissionGranted) {
                 WarningBanner(
@@ -83,52 +103,82 @@ fun HomeScreen(
                 WarningBanner(message = "No alert method is enabled. You won't be notified when charging finishes.")
             }
 
-            BatteryHeroCard(
+            if (uiState.isAlertActive) {
+                AlertActiveBanner(
+                    repeatCount = uiState.activeAlertRepeatCount,
+                    onStop = onStopAlert,
+                    onSnooze = onSnoozeAlert
+                )
+            }
+
+            BatteryHero(
                 batteryState = uiState.batteryState,
                 threshold = uiState.alertSettings.threshold,
                 thresholdReached = uiState.thresholdReached
             )
 
-            SectionLabel("MONITORING")
-            MonitoringCard(
-                monitoringActive = uiState.alertSettings.alertEnabled,
-                onToggle = onMonitoringToggle
-            )
+            Section(title = "MONITORING") {
+                MonitoringRow(
+                    monitoringActive = uiState.alertSettings.alertEnabled,
+                    onToggle = onMonitoringToggle
+                )
+            }
 
-            SectionLabel("ALERT")
-            ThresholdCard(
-                threshold = uiState.alertSettings.threshold,
-                onThresholdChangeFinished = onThresholdChangeFinished
-            )
+            Section(title = "ALERT ME AT") {
+                ThresholdSection(
+                    threshold = uiState.alertSettings.threshold,
+                    onThresholdChangeFinished = onThresholdChangeFinished
+                )
+            }
 
-            SectionLabel("ALERT METHODS")
-            AlertMethodsCard(
-                notificationEnabled = uiState.alertSettings.notificationEnabled,
-                soundEnabled = uiState.alertSettings.soundEnabled,
-                vibrationEnabled = uiState.alertSettings.vibrationEnabled,
-                notificationPermissionGranted = uiState.notificationPermissionGranted,
-                onNotificationChange = onNotificationEnabledChange,
-                onSoundChange = onSoundEnabledChange,
-                onVibrationChange = onVibrationEnabledChange
-            )
+            Section(title = "ALERT WITH") {
+                Column {
+                    AlertMethodsSection(
+                        notificationEnabled = uiState.alertSettings.notificationEnabled,
+                        soundEnabled = uiState.alertSettings.soundEnabled,
+                        vibrationEnabled = uiState.alertSettings.vibrationEnabled,
+                        notificationPermissionGranted = uiState.notificationPermissionGranted,
+                        onNotificationChange = onNotificationEnabledChange,
+                        onSoundChange = onSoundEnabledChange,
+                        onVibrationChange = onVibrationEnabledChange
+                    )
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                    SoundSelectionLabelRow(
+                        selectedSoundId = uiState.alertSettings.selectedSound,
+                        onClick = { showSoundPicker = true }
+                    )
+                }
+            }
 
-            SoundSelectionLabelRow(
-                selectedSoundId = uiState.alertSettings.selectedSound,
-                onClick = { showSoundPicker = true }
-            )
+            Section(title = "ALERT BEHAVIOR") {
+                AlertBehaviorSection(
+                    repeatEnabled = uiState.alertSettings.repeatEnabled,
+                    repeatIntervalMinutes = uiState.alertSettings.repeatIntervalMinutes,
+                    maxRepeats = uiState.alertSettings.maxRepeats,
+                    snoozeMinutes = uiState.alertSettings.snoozeMinutes,
+                    onRepeatEnabledChange = onRepeatEnabledChange,
+                    onRepeatIntervalChange = onRepeatIntervalChange,
+                    onMaxRepeatsChange = onMaxRepeatsChange,
+                    onSnoozeChange = onSnoozeChange
+                )
+            }
 
-            TestAlertCard(onTestAlert = onTestAlert)
+            TestAlertSection(onTestAlert = onTestAlert)
         }
     }
 }
 
 @Composable
-private fun SectionLabel(text: String) {
-    Text(
-        text = text,
-        style = MaterialTheme.typography.labelLarge,
-        color = MaterialTheme.colorScheme.onSurfaceVariant
-    )
+private fun Section(title: String, content: @Composable () -> Unit) {
+    Column {
+        Text(
+            text = title,
+            style = SectionLabelStyle,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(bottom = 12.dp)
+        )
+        content()
+    }
 }
 
 @Composable
@@ -137,12 +187,12 @@ private fun SoundSelectionLabelRow(selectedSoundId: String, onClick: () -> Unit)
     var label by remember(selectedSoundId) { mutableStateOf("Default notification sound") }
 
     LaunchedEffect(selectedSoundId) {
-        if (selectedSoundId == AlertSettings.DEFAULT_SOUND) {
-            label = "Default notification sound"
+        label = if (selectedSoundId == AlertSettings.DEFAULT_SOUND) {
+            "Default notification sound"
         } else {
-            label = withContext(Dispatchers.IO) {
+            withContext(Dispatchers.IO) {
                 runCatching {
-                    RingtoneManager.getRingtone(context, android.net.Uri.parse(selectedSoundId))?.getTitle(context)
+                    RingtoneManager.getRingtone(context, Uri.parse(selectedSoundId))?.getTitle(context)
                 }.getOrNull() ?: "Custom sound"
             }
         }

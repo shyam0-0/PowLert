@@ -16,17 +16,20 @@ import com.chargealert.app.R
 import com.chargealert.app.alert.BatteryAlertManager
 import com.chargealert.app.data.BatteryRepository
 import com.chargealert.app.data.UserPreferencesRepository
-import com.chargealert.app.domain.AlertEngine
 import com.chargealert.app.domain.AlertSettings
 import com.chargealert.app.domain.BatteryState
 import com.chargealert.app.domain.ChargingSessionState
+import com.chargealert.app.domain.RepeatAlertEngine
 import com.chargealert.app.domain.ThresholdEvaluator
+import com.chargealert.app.domain.Transition
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.launchIn
 import kotlinx.coroutines.flow.onEach
+import kotlinx.coroutines.launch
 
 /**
  * Foreground service that stays alive for as long as the alert feature is
@@ -35,8 +38,16 @@ import kotlinx.coroutines.flow.onEach
  *
  * The service does NOT stop when charging stops -- only when the user
  * disables the alert. It coordinates monitoring and delegates the alert
- * decision to AlertEngine and alert dispatch to BatteryAlertManager; it does
- * not contain alert logic itself.
+ * decision to RepeatAlertEngine and alert dispatch to BatteryAlertManager;
+ * it does not contain alert logic itself.
+ *
+ * Repeat/snooze scheduling (Phase 4) is a plain coroutine `delay()` inside
+ * this service's own long-lived scope -- no WorkManager/AlarmManager. The
+ * service is already expected to run continuously while monitoring is
+ * enabled, so that's the smallest correct mechanism; see plan.md Phase 4
+ * section 14. [repeatJob] is always cancelled before a new one is scheduled,
+ * so a settings change or a duplicate battery event can never create a
+ * second concurrent timer.
  */
 class BatteryMonitoringService : Service() {
 
@@ -45,13 +56,17 @@ class BatteryMonitoringService : Service() {
 
     private lateinit var batteryRepository: BatteryRepository
     private lateinit var preferencesRepository: UserPreferencesRepository
+    private lateinit var app: ChargeAlertApplication
 
     private var sessionState: ChargingSessionState = ChargingSessionState.NotCharging
+    private var latestSettings: AlertSettings = AlertSettings()
+    private var latestBatteryState: BatteryState = BatteryState(0, false, com.chargealert.app.domain.BatteryStatus.UNKNOWN)
+    private var repeatJob: Job? = null
     private var isObserving = false
 
     override fun onCreate() {
         super.onCreate()
-        val app = application as ChargeAlertApplication
+        app = application as ChargeAlertApplication
         batteryRepository = app.batteryRepository
         preferencesRepository = app.preferencesRepository
         Log.d(TAG, "Foreground service created")
@@ -60,13 +75,19 @@ class BatteryMonitoringService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         ServiceCompat.startForeground(
             this,
-            NOTIFICATION_ID,
-            buildNotification(idle = true),
+            MONITORING_NOTIFICATION_ID,
+            buildMonitoringNotification(idle = true),
             ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
         )
 
-        // onStartCommand can be re-invoked (e.g. after a START_STICKY restart);
-        // only subscribe once per living service instance.
+        when (intent?.action) {
+            ACTION_STOP_ALERT -> handleStop()
+            ACTION_SNOOZE_ALERT -> handleSnooze()
+        }
+
+        // onStartCommand can be re-invoked (e.g. after a START_STICKY restart,
+        // or a STOP/SNOOZE action intent); only subscribe once per living
+        // service instance.
         if (!isObserving) {
             observeBatteryState()
             isObserving = true
@@ -85,62 +106,92 @@ class BatteryMonitoringService : Service() {
     }
 
     private fun onBatteryStateChanged(state: BatteryState, settings: AlertSettings) {
-        val thresholdReached = ThresholdEvaluator.isThresholdReached(
-            percentage = state.percentage,
-            isCharging = state.isCharging,
-            threshold = settings.threshold
-        )
+        latestBatteryState = state
+        latestSettings = settings
 
+        val thresholdReached = ThresholdEvaluator.isThresholdReached(state.percentage, state.isCharging, settings.threshold)
         Log.d(
             TAG,
             "Battery update: percentage=${state.percentage} charging=${state.isCharging} " +
                 "threshold=${settings.threshold} thresholdReached=$thresholdReached"
         )
 
-        updateSessionState(state, settings)
-        updateNotification(state)
+        val transition = RepeatAlertEngine.onBatteryUpdate(sessionState, state.isCharging, thresholdReached, settings.repeatRule)
+        applyTransition(transition, state.percentage)
     }
 
-    private fun updateSessionState(state: BatteryState, settings: AlertSettings) {
+    private fun handleStop() {
+        val transition = RepeatAlertEngine.onStop(sessionState)
+        applyTransition(transition, latestBatteryState.percentage)
+        if (transition.newState == ChargingSessionState.Acknowledged) {
+            BatteryAlertManager.dismissAlertNotification(this)
+            Log.d(TAG, "Alert acknowledged (STOP)")
+        }
+    }
+
+    private fun handleSnooze() {
+        val transition = RepeatAlertEngine.onSnooze(sessionState, latestSettings.repeatRule)
+        applyTransition(transition, latestBatteryState.percentage)
+        if (transition.scheduleDelayMinutes != null) {
+            BatteryAlertManager.dismissAlertNotification(this)
+            Log.d(TAG, "Alert snoozed for ${transition.scheduleDelayMinutes} min")
+        }
+    }
+
+    private fun onRepeatTimerFired() {
+        val transition = RepeatAlertEngine.onRepeatTimerFired(sessionState, latestSettings.repeatRule)
+        applyTransition(transition, latestBatteryState.percentage)
+    }
+
+    private fun applyTransition(transition: Transition, batteryPercentage: Int) {
         val previousState = sessionState
-        val alreadyAlertedThisSession = previousState is ChargingSessionState.AlertTriggered ||
-            previousState is ChargingSessionState.WaitingForDisconnect
+        sessionState = transition.newState
+        app.updateSessionState(sessionState)
 
-        val shouldAlert = AlertEngine.shouldAlert(
-            percentage = state.percentage,
-            isCharging = state.isCharging,
-            threshold = settings.threshold,
-            alreadyAlertedThisSession = alreadyAlertedThisSession
-        )
-
-        sessionState = when {
-            !state.isCharging -> ChargingSessionState.NotCharging
-            shouldAlert -> ChargingSessionState.AlertTriggered
-            alreadyAlertedThisSession -> ChargingSessionState.WaitingForDisconnect
-            else -> ChargingSessionState.Charging
+        if (previousState != sessionState) {
+            Log.d(TAG, "Session state changed: $previousState -> $sessionState")
         }
 
-        if (previousState == sessionState) return
-        Log.d(TAG, "Session state changed: $previousState -> $sessionState")
+        if (transition.cancelSchedule) {
+            repeatJob?.cancel()
+            repeatJob = null
+        }
 
-        when {
-            !state.isCharging -> Log.d(TAG, "Charging session reset")
-            shouldAlert -> {
-                Log.d(TAG, "Threshold reached: percentage=${state.percentage} threshold=${settings.threshold}")
-                BatteryAlertManager.triggerAlert(this, settings, state.percentage)
-                Log.d(TAG, "Alert triggered")
-            }
-            alreadyAlertedThisSession -> Log.d(TAG, "Alert already triggered for current session")
+        if (transition.fireAlert) {
+            val repeatCount = transition.firingRepeatCount
+            Log.d(TAG, "Threshold reached: percentage=$batteryPercentage threshold=${latestSettings.threshold}")
+            BatteryAlertManager.triggerAlert(this, latestSettings, batteryPercentage, repeatCount)
+            Log.d(TAG, "Alert triggered (repeatCount=$repeatCount)")
+        }
+
+        transition.scheduleDelayMinutes?.let { minutes ->
+            scheduleRepeat(minutes)
+        }
+
+        if (sessionState == ChargingSessionState.NotCharging && previousState != ChargingSessionState.NotCharging) {
+            // Disconnect: drop any stale STOP/SNOOZE affordance from the last alert.
+            BatteryAlertManager.dismissAlertNotification(this)
+            Log.d(TAG, "Charging session reset")
+        }
+
+        updateMonitoringNotification(latestBatteryState)
+    }
+
+    private fun scheduleRepeat(delayMinutes: Int) {
+        repeatJob?.cancel()
+        repeatJob = scope.launch {
+            kotlinx.coroutines.delay(delayMinutes * 60_000L)
+            onRepeatTimerFired()
         }
     }
 
-    private fun updateNotification(state: BatteryState) {
-        val notification = buildNotification(idle = !state.isCharging, batteryState = state)
+    private fun updateMonitoringNotification(state: BatteryState) {
+        val notification = buildMonitoringNotification(idle = !state.isCharging, batteryState = state)
         val manager = getSystemService(NOTIFICATION_SERVICE) as android.app.NotificationManager
-        manager.notify(NOTIFICATION_ID, notification)
+        manager.notify(MONITORING_NOTIFICATION_ID, notification)
     }
 
-    private fun buildNotification(idle: Boolean, batteryState: BatteryState? = null): Notification {
+    private fun buildMonitoringNotification(idle: Boolean, batteryState: BatteryState? = null): Notification {
         val openAppIntent = PendingIntent.getActivity(
             this,
             0,
@@ -172,6 +223,7 @@ class BatteryMonitoringService : Service() {
 
     override fun onDestroy() {
         Log.d(TAG, "Foreground service stopped")
+        repeatJob?.cancel()
         scope.cancel()
         super.onDestroy()
     }
@@ -180,7 +232,10 @@ class BatteryMonitoringService : Service() {
 
     companion object {
         private const val TAG = "BatteryMonitoringSvc"
-        private const val NOTIFICATION_ID = 1001
+        private const val MONITORING_NOTIFICATION_ID = 1001
+
+        private const val ACTION_STOP_ALERT = "com.chargealert.app.action.STOP_ALERT"
+        private const val ACTION_SNOOZE_ALERT = "com.chargealert.app.action.SNOOZE_ALERT"
 
         fun start(context: Context) {
             val intent = Intent(context, BatteryMonitoringService::class.java)
@@ -193,6 +248,33 @@ class BatteryMonitoringService : Service() {
 
         fun stop(context: Context) {
             context.stopService(Intent(context, BatteryMonitoringService::class.java))
+        }
+
+        /** Sent directly by the in-app fallback UI (same path as the notification action). */
+        fun sendStopAlert(context: Context) {
+            actionIntent(context, ACTION_STOP_ALERT)
+        }
+
+        fun sendSnoozeAlert(context: Context) {
+            actionIntent(context, ACTION_SNOOZE_ALERT)
+        }
+
+        fun stopAlertPendingIntent(context: Context): PendingIntent = actionPendingIntent(context, ACTION_STOP_ALERT, 1)
+
+        fun snoozeAlertPendingIntent(context: Context): PendingIntent = actionPendingIntent(context, ACTION_SNOOZE_ALERT, 2)
+
+        private fun actionIntent(context: Context, action: String) {
+            val intent = Intent(context, BatteryMonitoringService::class.java).setAction(action)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                context.startForegroundService(intent)
+            } else {
+                context.startService(intent)
+            }
+        }
+
+        private fun actionPendingIntent(context: Context, action: String, requestCode: Int): PendingIntent {
+            val intent = Intent(context, BatteryMonitoringService::class.java).setAction(action)
+            return PendingIntent.getForegroundService(context, requestCode, intent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
         }
     }
 }

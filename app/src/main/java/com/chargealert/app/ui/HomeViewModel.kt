@@ -1,6 +1,7 @@
 package com.chargealert.app.ui
 
 import android.app.Application
+import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.chargealert.app.ChargeAlertApplication
@@ -31,10 +32,11 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
     val uiState: StateFlow<HomeUiState> = combine(
         batteryRepository.batteryStateUpdates(),
         preferencesRepository.settings,
+        app.sessionState,
         notificationPermissionGranted,
         warningMessage
-    ) { battery, settings, permissionGranted, warning ->
-        HomeUiState(battery, settings, permissionGranted, warning)
+    ) { battery, settings, sessionState, permissionGranted, warning ->
+        HomeUiState(battery, settings, sessionState, permissionGranted, warning)
     }.stateIn(
         scope = viewModelScope,
         started = SharingStarted.WhileSubscribed(5000),
@@ -89,12 +91,50 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch { preferencesRepository.setSelectedSound(soundId) }
     }
 
+    /** [uri] must already have a persisted read permission grant (see MainActivity's OpenDocument callback). */
+    fun onCustomSoundPicked(uri: Uri) {
+        onSelectedSoundChange(uri.toString())
+    }
+
+    fun onRepeatEnabledChange(enabled: Boolean) {
+        viewModelScope.launch { preferencesRepository.setRepeatEnabled(enabled) }
+    }
+
+    fun onRepeatIntervalChange(minutes: Int) {
+        viewModelScope.launch { preferencesRepository.setRepeatIntervalMinutes(minutes) }
+    }
+
+    fun onMaxRepeatsChange(count: Int) {
+        viewModelScope.launch { preferencesRepository.setMaxRepeats(count) }
+    }
+
+    fun onSnoozeChange(minutes: Int) {
+        viewModelScope.launch { preferencesRepository.setSnoozeMinutes(minutes) }
+    }
+
     fun onTestAlert() {
         val state = uiState.value
         // Reuses the exact same dispatch code as a real alert, but is called
-        // directly instead of through AlertEngine/ChargingSessionState, so it
-        // never reads or mutates session-alerted state.
-        BatteryAlertManager.triggerAlert(app, state.alertSettings, state.batteryState.percentage)
+        // directly instead of through RepeatAlertEngine/ChargingSessionState,
+        // so it never reads or mutates session-alerted state, never counts
+        // toward the repeat cap, and gets no STOP/SNOOZE actions (there is no
+        // real sequence for them to act on).
+        BatteryAlertManager.triggerAlert(
+            context = app,
+            settings = state.alertSettings,
+            batteryPercentage = state.batteryState.percentage,
+            repeatCount = 0,
+            includeActions = false
+        )
+    }
+
+    /** Same intent path the notification's STOP action uses -- the in-app fallback banner is not a separate code path. */
+    fun onStopAlert() {
+        BatteryMonitoringService.sendStopAlert(app)
+    }
+
+    fun onSnoozeAlert() {
+        BatteryMonitoringService.sendSnoozeAlert(app)
     }
 
     fun dismissWarning() {

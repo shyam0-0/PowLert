@@ -25,6 +25,10 @@ class UserPreferencesRepository(private val context: Context) {
         val VIBRATION_ENABLED = booleanPreferencesKey("vibrationEnabled")
         val NOTIFICATION_ENABLED = booleanPreferencesKey("notificationEnabled")
         val SELECTED_SOUND = stringPreferencesKey("selectedSound")
+        val REPEAT_ENABLED = booleanPreferencesKey("repeatEnabled")
+        val REPEAT_INTERVAL_MINUTES = intPreferencesKey("repeatIntervalMinutes")
+        val MAX_REPEATS = intPreferencesKey("maxRepeats")
+        val SNOOZE_MINUTES = intPreferencesKey("snoozeMinutes")
     }
 
     val settings: Flow<AlertSettings> = context.dataStore.data.map { prefs ->
@@ -35,7 +39,11 @@ class UserPreferencesRepository(private val context: Context) {
             soundEnabled = prefs[Keys.SOUND_ENABLED] ?: defaults.soundEnabled,
             vibrationEnabled = prefs[Keys.VIBRATION_ENABLED] ?: defaults.vibrationEnabled,
             notificationEnabled = prefs[Keys.NOTIFICATION_ENABLED] ?: defaults.notificationEnabled,
-            selectedSound = prefs[Keys.SELECTED_SOUND] ?: defaults.selectedSound
+            selectedSound = prefs[Keys.SELECTED_SOUND] ?: defaults.selectedSound,
+            repeatEnabled = prefs[Keys.REPEAT_ENABLED] ?: defaults.repeatEnabled,
+            repeatIntervalMinutes = prefs[Keys.REPEAT_INTERVAL_MINUTES] ?: defaults.repeatIntervalMinutes,
+            maxRepeats = prefs[Keys.MAX_REPEATS] ?: defaults.maxRepeats,
+            snoozeMinutes = prefs[Keys.SNOOZE_MINUTES] ?: defaults.snoozeMinutes
         )
     }
 
@@ -61,5 +69,21 @@ class UserPreferencesRepository(private val context: Context) {
 
     suspend fun setSelectedSound(sound: String) {
         context.dataStore.edit { it[Keys.SELECTED_SOUND] = sound }
+    }
+
+    suspend fun setRepeatEnabled(enabled: Boolean) {
+        context.dataStore.edit { it[Keys.REPEAT_ENABLED] = enabled }
+    }
+
+    suspend fun setRepeatIntervalMinutes(minutes: Int) {
+        context.dataStore.edit { it[Keys.REPEAT_INTERVAL_MINUTES] = minutes }
+    }
+
+    suspend fun setMaxRepeats(count: Int) {
+        context.dataStore.edit { it[Keys.MAX_REPEATS] = count }
+    }
+
+    suspend fun setSnoozeMinutes(minutes: Int) {
+        context.dataStore.edit { it[Keys.SNOOZE_MINUTES] = minutes }
     }
 }
